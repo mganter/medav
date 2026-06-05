@@ -92,7 +92,7 @@ curl -s -X DELETE "$BASE/calendars/default/test.ics"
 ## Deployment
 
 Container images are published as multi-arch (amd64/arm64) and built on
-`gcr.io/distroless/static-nonroot` — no shell, no package manager, runs as an
+`gcr.io/distroless/static:nonroot` — no shell, no package manager, runs as an
 unprivileged user. Because it runs as `nonroot`, bind to an unprivileged port
 (the default loopback `127.0.0.1:8080`).
 

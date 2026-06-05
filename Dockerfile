@@ -1,11 +1,12 @@
 # GoReleaser builds the static binary and supplies it in the build context; this
-# Dockerfile only assembles the final image. The distroless static-nonroot base
+# Dockerfile only assembles the final image. The distroless static:nonroot base
 # ships no shell or package manager and runs as an unprivileged user (uid 65532).
 #
-# Supply-chain note: ":latest" is mutable, so builds are not reproducible. For
-# stronger integrity pin by immutable digest and bump via Dependabot/Renovate:
-#   FROM gcr.io/distroless/static-nonroot@sha256:<digest>
-FROM gcr.io/distroless/static-nonroot:latest
+# Supply-chain note: the "nonroot" tag is mutable, so builds are not
+# reproducible. For stronger integrity pin by immutable digest and bump via
+# Dependabot/Renovate:
+#   FROM gcr.io/distroless/static:nonroot@sha256:<digest>
+FROM gcr.io/distroless/static:nonroot
 
 # GoReleaser (dockers_v2) lays the prebuilt binaries out under <os>/<arch>/ and
 # buildx supplies TARGETPLATFORM (e.g. "linux/amd64") for the current target.
