@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -48,6 +49,17 @@ func run(logger *slog.Logger) error {
 
 	logger.Info("starting medav", "version", version, "commit", commit, "date", date, "addr", cfg.ListenAddr)
 
+	// medav authenticates nothing itself; it trusts every request as the single
+	// user. That is safe only when the upstream proxy is the sole reachable
+	// client. Warn loudly if neither network isolation (loopback bind) nor a
+	// shared proxy secret enforces that assumption.
+	if !isLoopbackAddr(cfg.ListenAddr) && cfg.ProxyAuthSecret == "" {
+		logger.Warn("listening on a non-loopback address with no PROXY_AUTH_SECRET set: "+
+			"medav performs no authentication and trusts every request. "+
+			"Bind to loopback or set PROXY_AUTH_SECRET so only the upstream proxy can reach it.",
+			"addr", cfg.ListenAddr)
+	}
+
 	// A signal-aware base context aborts in-flight startup work on shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -67,16 +79,29 @@ func run(logger *slog.Logger) error {
 	}
 	logger.Info("migrations applied")
 
-	backend := storage.New(pool, cfg.Prefix)
+	backend := storage.New(pool, cfg.Prefix, logger)
 	if err := backend.EnsureDefaultCalendar(ctx); err != nil {
 		return err
 	}
 
 	caldavHandler := &caldav.Handler{Backend: backend, Prefix: cfg.Prefix}
+	handler := httpx.New(caldavHandler, logger, httpx.Options{
+		ProxyAuthHeader: cfg.ProxyAuthHeader,
+		ProxyAuthSecret: cfg.ProxyAuthSecret,
+		MaxBodyBytes:    cfg.MaxBodyBytes,
+	})
 	srv := &http.Server{
-		Addr:              cfg.ListenAddr,
-		Handler:           httpx.New(caldavHandler, logger),
+		Addr:    cfg.ListenAddr,
+		Handler: handler,
+		// Timeouts bound how long a single connection can tie up resources,
+		// defending against slowloris / slow-body attacks. ReadTimeout covers
+		// reading the (size-capped) body; WriteTimeout is generous for large
+		// REPORT responses.
 		ReadHeaderTimeout: 15 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		WriteTimeout:      120 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1 MiB
 	}
 
 	errCh := make(chan error, 1)
@@ -95,6 +120,25 @@ func run(logger *slog.Logger) error {
 		defer cancel()
 		return srv.Shutdown(shutdownCtx)
 	}
+}
+
+// isLoopbackAddr reports whether addr binds only to the loopback interface. An
+// empty host (e.g. ":8080") means all interfaces and is treated as non-loopback.
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	switch host {
+	case "":
+		return false // all interfaces
+	case "localhost":
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 func logLevel() slog.Level {
