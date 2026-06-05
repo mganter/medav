@@ -68,13 +68,13 @@ func startServer(t *testing.T) *testServer {
 	if err := storage.Migrate(ctx, pool); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	backend := storage.New(pool, "")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	backend := storage.New(pool, "", logger)
 	if err := backend.EnsureDefaultCalendar(ctx); err != nil {
 		t.Fatalf("seed default calendar: %v", err)
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	handler := httpx.New(&caldav.Handler{Backend: backend, Prefix: ""}, logger)
+	handler := httpx.New(&caldav.Handler{Backend: backend, Prefix: ""}, logger, httpx.Options{})
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 

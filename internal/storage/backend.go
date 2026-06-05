@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -25,13 +26,18 @@ const pgUniqueViolation = "23505"
 
 // Backend stores calendars and calendar objects in PostgreSQL.
 type Backend struct {
-	pool  *pgxpool.Pool
-	paths Paths
+	pool   *pgxpool.Pool
+	paths  Paths
+	logger *slog.Logger
 }
 
-// New returns a Backend backed by the given pool and URL prefix.
-func New(pool *pgxpool.Pool, prefix string) *Backend {
-	return &Backend{pool: pool, paths: NewPaths(prefix)}
+// New returns a Backend backed by the given pool and URL prefix. The logger is
+// used for audit records of mutating operations; if nil, slog.Default is used.
+func New(pool *pgxpool.Pool, prefix string, logger *slog.Logger) *Backend {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Backend{pool: pool, paths: NewPaths(prefix), logger: logger}
 }
 
 // EnsureDefaultCalendar creates the pre-seeded default calendar if it does not
@@ -101,12 +107,18 @@ func (b *Backend) CreateCalendar(ctx context.Context, cal *caldav.Calendar) erro
 	if len(comps) == 0 {
 		comps = []string{"VEVENT", "VTODO"}
 	}
-	_, err := b.pool.Exec(ctx, `
+	tag, err := b.pool.Exec(ctx, `
 		INSERT INTO calendars (path, name, description, max_resource_size, supported_component_set)
 		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (path) DO NOTHING`,
 		cal.Path, cal.Name, cal.Description, cal.MaxResourceSize, comps)
-	return err
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() > 0 {
+		b.logger.Info("audit: calendar created", "op", "MKCALENDAR", "path", cal.Path, "name", cal.Name)
+	}
+	return nil
 }
 
 // --- calendar objects -----------------------------------------------------
@@ -271,6 +283,9 @@ func (b *Backend) PutCalendarObject(ctx context.Context, path string, cal *ical.
 		return nil, err
 	}
 
+	b.logger.Info("audit: calendar object stored",
+		"op", "PUT", "path", path, "calendar", calendarPath, "uid", uid, "etag", etag, "bytes", len(raw))
+
 	return &caldav.CalendarObject{
 		Path:          path,
 		ModTime:       modTime,
@@ -305,7 +320,12 @@ func (b *Backend) DeleteCalendarObject(ctx context.Context, path string) error {
 	if err := bumpCtag(ctx, tx, calendarPath); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	b.logger.Info("audit: calendar object deleted", "op", "DELETE", "path", path, "calendar", calendarPath)
+	return nil
 }
 
 // --- helpers --------------------------------------------------------------

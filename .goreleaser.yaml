@@ -36,6 +36,26 @@ archives:
 checksum:
   name_template: "checksums.txt"
 
+# CycloneDX-style SBOMs (via Syft) record exactly which dependencies shipped in
+# each release archive, so a future CVE can be traced to affected artifacts.
+sboms:
+  - id: archive
+    artifacts: archive
+
+# Keyless (OIDC) cosign signature over the checksums file. Verifying the
+# checksums verifies every artifact listed in it. Requires id-token: write.
+signs:
+  - cmd: cosign
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--output-certificate=${certificate}"
+      - "--output-signature=${signature}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
+    output: true
+
 changelog:
   sort: asc
   filters:
@@ -63,3 +83,14 @@ dockers_v2:
       org.opencontainers.image.version: "{{ .Version }}"
       org.opencontainers.image.revision: "{{ .FullCommit }}"
       org.opencontainers.image.source: "{{ .GitURL }}"
+
+# Keyless cosign signatures over the published images (by digest), so consumers
+# can `cosign verify ghcr.io/mganter/medav:<tag>` to confirm provenance.
+docker_signs:
+  - cmd: cosign
+    args:
+      - sign
+      - "--yes"
+      - "${artifact}"
+    artifacts: images
+    output: true

@@ -8,7 +8,11 @@ on:
 permissions:
   contents: write # create the GitHub release
   packages: write # push images to GHCR
+  id-token: write # keyless (OIDC) cosign signing of artifacts and images
 
+# Supply-chain note: third-party actions below are pinned to major-version tags
+# for readability. For stronger integrity, pin each to a full commit SHA (with
+# the version as a trailing comment) and let Dependabot bump them.
 jobs:
   goreleaser:
     runs-on: ubuntu-latest
@@ -23,11 +27,22 @@ jobs:
         with:
           go-version: "1.26"
 
+      - name: Vulnerability scan (govulncheck)
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3 # cross-build arm64 images
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+
+      - name: Install Syft (SBOM generation)
+        uses: anchore/sbom-action/download-syft@v0
+
+      - name: Install Cosign (artifact/image signing)
+        uses: sigstore/cosign-installer@v3
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3

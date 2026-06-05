@@ -1,4 +1,8 @@
-# Local development: a PostgreSQL instance for running medav against.
+# Local development ONLY: a PostgreSQL instance for running medav against.
+#
+# The credentials and sslmode=disable below are insecure dev defaults. Do NOT
+# reuse them in production: use unique generated credentials and an encrypting,
+# certificate-verifying connection (sslmode=verify-full).
 #
 #   docker compose up -d
 #   DATABASE_URL=postgres://medav:medav@localhost:5432/medav?sslmode=disable \
@@ -8,7 +12,7 @@ services:
     image: postgres:17
     environment:
       POSTGRES_USER: medav
-      POSTGRES_PASSWORD: medav
+      POSTGRES_PASSWORD: medav # dev-only default — change for any real deployment
       POSTGRES_DB: medav
     ports:
       - "5432:5432"
