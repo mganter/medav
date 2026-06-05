@@ -1,0 +1,4 @@
+/dist/
+/medav
+*.out
+.env

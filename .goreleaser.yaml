@@ -1,0 +1,65 @@
+# GoReleaser configuration (schema v2). See https://goreleaser.com
+# Images are published to ghcr.io/mganter/medav (derived from the git remote).
+version: 2
+
+project_name: medav
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: medav
+    main: ./cmd/medav
+    binary: medav
+    env:
+      - CGO_ENABLED=0 # static binary required for distroless/static
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .Commit }}
+      - -X main.date={{ .Date }}
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: medav
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+# Multi-arch image built with buildx; the manifest is assembled automatically.
+dockers_v2:
+  - id: medav
+    ids:
+      - medav
+    images:
+      - "ghcr.io/mganter/medav"
+    tags:
+      - "{{ .Version }}"
+      - "latest"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    dockerfile: Dockerfile
+    labels:
+      org.opencontainers.image.title: "{{ .ProjectName }}"
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.source: "{{ .GitURL }}"

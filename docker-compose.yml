@@ -1,0 +1,24 @@
+# Local development: a PostgreSQL instance for running medav against.
+#
+#   docker compose up -d
+#   DATABASE_URL=postgres://medav:medav@localhost:5432/medav?sslmode=disable \
+#     LOG_LEVEL=debug go run ./cmd/medav
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: medav
+      POSTGRES_PASSWORD: medav
+      POSTGRES_DB: medav
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U medav"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
