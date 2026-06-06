@@ -154,3 +154,7 @@ daemon and is gated behind the `integration` build tag, so the default
 ```sh
 go test -tags=integration ./internal/storage/
 ```
+
+## License
+
+Released under the [MIT License](LICENSE).
