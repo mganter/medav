@@ -39,6 +39,20 @@ func (p Paths) HomeSet() string { return p.prefix + "/calendars/user/" }
 // DefaultCalendar returns the path of the pre-seeded default calendar (depth 3).
 func (p Paths) DefaultCalendar() string { return p.prefix + "/calendars/user/default/" }
 
+// IsCalendar reports whether urlPath is a calendar collection path, i.e.
+// <prefix>/calendars/user/<name>/ with a single non-empty <name> segment (the
+// depth-3 layout documented above). This replicates the one classification
+// go-webdav makes internally but does not export, so MKCALENDAR can be rejected
+// at any other location just as MKCOL is.
+func (p Paths) IsCalendar(urlPath string) bool {
+	rest, ok := strings.CutPrefix(urlPath, p.HomeSet())
+	if !ok {
+		return false
+	}
+	name := strings.TrimSuffix(rest, "/")
+	return name != "" && !strings.Contains(name, "/")
+}
+
 // CalendarOf returns the calendar collection path that owns the given object
 // path, e.g. "/calendars/default/foo.ics" -> "/calendars/default/". The result
 // always ends with a slash.

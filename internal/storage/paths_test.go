@@ -25,6 +25,27 @@ func TestPaths(t *testing.T) {
 	}
 }
 
+func TestIsCalendar(t *testing.T) {
+	cases := []struct {
+		prefix, path string
+		want         bool
+	}{
+		{"", "/calendars/user/work/", true},
+		{"", "/calendars/user/default/", true},
+		{"/dav", "/dav/calendars/user/work/", true},
+		{"", "/calendars/user/", false},           // home set (depth 2)
+		{"", "/principals/", false},               // principal (depth 1)
+		{"", "/calendars/user/work/x.ics", false}, // object (depth 4)
+		{"", "/", false},
+		{"/dav", "/calendars/user/work/", false}, // missing prefix
+	}
+	for _, c := range cases {
+		if got := NewPaths(c.prefix).IsCalendar(c.path); got != c.want {
+			t.Errorf("prefix %q: IsCalendar(%q) = %v, want %v", c.prefix, c.path, got, c.want)
+		}
+	}
+}
+
 func TestCalendarOf(t *testing.T) {
 	cases := map[string]string{
 		"/calendars/user/default/foo.ics": "/calendars/user/default/",

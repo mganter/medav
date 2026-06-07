@@ -18,6 +18,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"medav/internal/caldavx"
 	"medav/internal/config"
 	"medav/internal/httpx"
 	"medav/internal/storage"
@@ -85,7 +86,9 @@ func run(logger *slog.Logger) error {
 	}
 
 	caldavHandler := &caldav.Handler{Backend: backend, Prefix: cfg.Prefix}
-	handler := httpx.New(caldavHandler, logger, httpx.Options{
+	// go-webdav has no MKCALENDAR; wrap it so standard clients can create calendars.
+	root := caldavx.Wrap(caldavHandler, backend, storage.NewPaths(cfg.Prefix))
+	handler := httpx.New(root, logger, httpx.Options{
 		ProxyAuthHeader: cfg.ProxyAuthHeader,
 		ProxyAuthSecret: cfg.ProxyAuthSecret,
 		MaxBodyBytes:    cfg.MaxBodyBytes,
