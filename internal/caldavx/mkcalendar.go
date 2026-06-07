@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 
@@ -20,6 +21,25 @@ import (
 
 	"medav/internal/storage"
 )
+
+// Plausibility bounds on MKCALENDAR properties. They are well above any real
+// client's needs but keep a malicious body (within the global size cap) from
+// storing oversized metadata.
+const (
+	maxDisplayNameLen = 255
+	maxDescriptionLen = 4096
+	maxComponents     = 16
+)
+
+// validComponents is the set of iCalendar component types a calendar may
+// advertise (RFC 5545). Anything else is rejected so the advertised capability
+// set stays consistent with what the server actually supports.
+var validComponents = map[string]bool{
+	"VEVENT":    true,
+	"VTODO":     true,
+	"VJOURNAL":  true,
+	"VFREEBUSY": true,
+}
 
 // CalendarCreator is the slice of the storage backend MKCALENDAR needs. The
 // concrete *storage.Backend already satisfies it.
@@ -67,26 +87,54 @@ func handleMkcalendar(w http.ResponseWriter, r *http.Request, backend CalendarCr
 
 	cal := caldav.Calendar{Path: r.URL.Path}
 
-	// The body is optional; clients may MKCALENDAR with no properties.
+	// The body is optional; clients may MKCALENDAR with no properties. Go's
+	// encoding/xml does not resolve external entities or expand DTD-defined
+	// entities (verified: such references error rather than fetch/expand), so
+	// XXE and billion-laughs are not reachable. We additionally reject foreign
+	// charsets so only UTF-8/ASCII bodies are accepted, and the body is already
+	// size-capped by the upstream limitBody middleware.
+	dec := xml.NewDecoder(r.Body)
+	dec.CharsetReader = func(charset string, _ io.Reader) (io.Reader, error) {
+		return nil, fmt.Errorf("unsupported charset %q", charset)
+	}
 	var req mkcalendarReq
-	if err := xml.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := dec.Decode(&req); err != nil {
 		if !errors.Is(err, io.EOF) {
-			http.Error(w, "caldav: invalid MKCALENDAR body: "+err.Error(), http.StatusBadRequest)
+			// Return a generic message; the parser error could echo body
+			// internals back to the client (CWE-209).
+			http.Error(w, "caldav: invalid MKCALENDAR body", http.StatusBadRequest)
 			return
 		}
 	} else {
+		if len(req.DisplayName) > maxDisplayNameLen || len(req.Description) > maxDescriptionLen {
+			http.Error(w, "caldav: calendar name or description too long", http.StatusBadRequest)
+			return
+		}
+		if len(req.Comps) > maxComponents {
+			http.Error(w, "caldav: too many calendar components", http.StatusBadRequest)
+			return
+		}
 		cal.Name = req.DisplayName
 		cal.Description = req.Description
 		for _, c := range req.Comps {
-			if c.Name != "" {
-				cal.SupportedComponentSet = append(cal.SupportedComponentSet, c.Name)
+			if c.Name == "" {
+				continue
 			}
+			if !validComponents[c.Name] {
+				http.Error(w, "caldav: unsupported calendar component "+c.Name, http.StatusBadRequest)
+				return
+			}
+			cal.SupportedComponentSet = append(cal.SupportedComponentSet, c.Name)
 		}
 	}
 
 	// CreateCalendar is idempotent (ON CONFLICT DO NOTHING) and emits its own
 	// audit log line, so a repeated MKCALENDAR is a no-op 201.
 	if err := backend.CreateCalendar(r.Context(), &cal); err != nil {
+		if errors.Is(err, storage.ErrTooManyCalendars) {
+			http.Error(w, "caldav: calendar limit reached", http.StatusInsufficientStorage)
+			return
+		}
 		http.Error(w, "caldav: failed to create calendar", http.StatusInternalServerError)
 		return
 	}

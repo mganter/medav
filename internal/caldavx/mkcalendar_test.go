@@ -105,6 +105,46 @@ func TestMkcalendarWrongPath(t *testing.T) {
 	}
 }
 
+func TestMkcalendarValidation(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"long-displayname", `<C:mkcalendar xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><D:set><D:prop><D:displayname>` + strings.Repeat("x", maxDisplayNameLen+1) + `</D:displayname></D:prop></D:set></C:mkcalendar>`},
+		{"long-description", `<C:mkcalendar xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><D:set><D:prop><C:calendar-description>` + strings.Repeat("x", maxDescriptionLen+1) + `</C:calendar-description></D:prop></D:set></C:mkcalendar>`},
+		{"bad-component", `<C:mkcalendar xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><D:set><D:prop><C:supported-calendar-component-set><C:comp name="VEVIL"/></C:supported-calendar-component-set></D:prop></D:set></C:mkcalendar>`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fc := &fakeCreator{}
+			h := Wrap(passthrough(t), fc, storage.NewPaths(""))
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest("MKCALENDAR", "/calendars/user/work/", strings.NewReader(c.body))
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400", rec.Code)
+			}
+			if fc.called {
+				t.Fatal("CreateCalendar should not be called for an invalid body")
+			}
+		})
+	}
+}
+
+func TestMkcalendarLimitReached(t *testing.T) {
+	fc := &fakeCreator{err: storage.ErrTooManyCalendars}
+	h := Wrap(passthrough(t), fc, storage.NewPaths(""))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("MKCALENDAR", "/calendars/user/work/", nil)
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInsufficientStorage {
+		t.Fatalf("status = %d, want 507", rec.Code)
+	}
+}
+
 func TestOptionsAllowAugmented(t *testing.T) {
 	// next simulates go-webdav: sets an Allow header then writes 200.
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

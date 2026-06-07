@@ -12,6 +12,11 @@ import (
 // above any realistic calendar object.
 const defaultMaxBodyBytes int64 = 10 << 20 // 10 MiB
 
+// defaultMaxCalendars bounds how many calendars may exist, so a client looping
+// MKCALENDAR cannot grow the table without limit. Far above any single user's
+// realistic need.
+const defaultMaxCalendars = 100
+
 // Config holds all runtime settings. The service is single-user and performs no
 // authentication of its own — a reverse proxy / ingress controller is expected
 // to authenticate requests upstream.
@@ -39,6 +44,9 @@ type Config struct {
 	// MaxBodyBytes caps the size of a request body in bytes. Zero or negative
 	// disables the limit. Defaults to defaultMaxBodyBytes.
 	MaxBodyBytes int64
+	// MaxCalendars caps how many calendars may exist. Zero or negative disables
+	// the cap. Defaults to defaultMaxCalendars.
+	MaxCalendars int
 }
 
 // Load reads configuration from environment variables, applying defaults.
@@ -50,6 +58,7 @@ func Load() (Config, error) {
 		ProxyAuthHeader: getenv("PROXY_AUTH_HEADER", "X-Medav-Proxy-Auth"),
 		ProxyAuthSecret: os.Getenv("PROXY_AUTH_SECRET"),
 		MaxBodyBytes:    defaultMaxBodyBytes,
+		MaxCalendars:    defaultMaxCalendars,
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -62,6 +71,14 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("MAX_BODY_BYTES: %w", err)
 		}
 		cfg.MaxBodyBytes = n
+	}
+
+	if v := os.Getenv("MAX_CALENDARS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("MAX_CALENDARS: %w", err)
+		}
+		cfg.MaxCalendars = n
 	}
 
 	// Normalise the prefix: strip a trailing slash so path building stays simple.

@@ -36,6 +36,7 @@ All configuration is via environment variables (see [`.env.example`](.env.exampl
 | `PROXY_AUTH_HEADER` | no       | `X-Medav-Proxy-Auth` | Header the proxy injects to prove a request transited it |
 | `PROXY_AUTH_SECRET` | no       | `""`               | When set, requests (except `/healthz`) must carry `PROXY_AUTH_HEADER` with this value or get 403 |
 | `MAX_BODY_BYTES`    | no       | `10485760` (10 MiB)| Max request body size; `0` disables the limit |
+| `MAX_CALENDARS`     | no       | `100`              | Max number of calendars (caps `MKCALENDAR`); `0` disables the cap |
 | `PREFIX`            | no       | `""`               | URL path prefix (no trailing slash); keep stable once data exists |
 | `LOG_LEVEL`         | no       | `info`             | `debug` \| `info` \| `warn` \| `error` |
 

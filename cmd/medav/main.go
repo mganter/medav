@@ -80,7 +80,7 @@ func run(logger *slog.Logger) error {
 	}
 	logger.Info("migrations applied")
 
-	backend := storage.New(pool, cfg.Prefix, logger)
+	backend := storage.New(pool, cfg.Prefix, cfg.MaxCalendars, logger)
 	if err := backend.EnsureDefaultCalendar(ctx); err != nil {
 		return err
 	}

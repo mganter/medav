@@ -26,6 +26,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 
+	"medav/internal/caldavx"
 	"medav/internal/httpx"
 	"medav/internal/storage"
 )
@@ -69,12 +70,13 @@ func startServer(t *testing.T) *testServer {
 		t.Fatalf("migrate: %v", err)
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	backend := storage.New(pool, "", logger)
+	backend := storage.New(pool, "", 0, logger)
 	if err := backend.EnsureDefaultCalendar(ctx); err != nil {
 		t.Fatalf("seed default calendar: %v", err)
 	}
 
-	handler := httpx.New(&caldav.Handler{Backend: backend, Prefix: ""}, logger, httpx.Options{})
+	root := caldavx.Wrap(&caldav.Handler{Backend: backend, Prefix: ""}, backend, storage.NewPaths(""))
+	handler := httpx.New(root, logger, httpx.Options{})
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
@@ -110,6 +112,36 @@ func TestCalDAVIntegration(t *testing.T) {
 		body = ts.propfind(t, "/calendars/user/", 1, `<d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:displayname/></d:prop></d:propfind>`)
 		assertContains(t, body, "/calendars/user/default/")
 		assertContains(t, body, "Personal")
+	})
+
+	t.Run("mkcalendar", func(t *testing.T) {
+		// Create a calendar via MKCALENDAR, then confirm it surfaces under the
+		// home set.
+		body := `<C:mkcalendar xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">` +
+			`<D:set><D:prop><D:displayname>Work</D:displayname>` +
+			`<C:calendar-description>My work calendar</C:calendar-description>` +
+			`<C:supported-calendar-component-set><C:comp name="VEVENT"/></C:supported-calendar-component-set>` +
+			`</D:prop></D:set></C:mkcalendar>`
+		resp, _ := ts.do(t, "MKCALENDAR", "/calendars/user/work/", body, nil)
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("MKCALENDAR status = %d, want 201", resp.StatusCode)
+		}
+
+		// Idempotent: a repeat is still 201, not an error.
+		resp, _ = ts.do(t, "MKCALENDAR", "/calendars/user/work/", body, nil)
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("repeat MKCALENDAR status = %d, want 201", resp.StatusCode)
+		}
+
+		list := ts.propfind(t, "/calendars/user/", 1, `<d:propfind xmlns:d="DAV:"><d:prop><d:displayname/></d:prop></d:propfind>`)
+		assertContains(t, list, "/calendars/user/work/")
+		assertContains(t, list, "Work")
+
+		// Wrong location (the home set itself) must be rejected.
+		resp, _ = ts.do(t, "MKCALENDAR", "/calendars/user/", body, nil)
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("MKCALENDAR at home set status = %d, want 403", resp.StatusCode)
+		}
 	})
 
 	t.Run("well-known redirect", func(t *testing.T) {

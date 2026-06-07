@@ -1,6 +1,9 @@
 package storage
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestPaths(t *testing.T) {
 	cases := []struct {
@@ -38,11 +41,22 @@ func TestIsCalendar(t *testing.T) {
 		{"", "/calendars/user/work/x.ics", false}, // object (depth 4)
 		{"", "/", false},
 		{"/dav", "/calendars/user/work/", false}, // missing prefix
+		{"", "/calendars/user/../", false},       // parent traversal
+		{"", "/calendars/user/./", false},        // current-dir token
+		{"", "/calendars/user/a..b/", false},     // embedded ".."
+		{"", "/calendars/user/a\\b/", false},     // backslash separator
+		{"", "/calendars/user/a\x00b/", false},   // control character
 	}
 	for _, c := range cases {
 		if got := NewPaths(c.prefix).IsCalendar(c.path); got != c.want {
 			t.Errorf("prefix %q: IsCalendar(%q) = %v, want %v", c.prefix, c.path, got, c.want)
 		}
+	}
+
+	// A name segment over the length bound is rejected.
+	long := "/calendars/user/" + strings.Repeat("a", maxCalendarName+1) + "/"
+	if NewPaths("").IsCalendar(long) {
+		t.Errorf("IsCalendar(<%d-char name>) = true, want false", maxCalendarName+1)
 	}
 }
 

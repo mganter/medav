@@ -10,7 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/emersion/go-ical"
@@ -24,20 +26,29 @@ import (
 // constraint violation.
 const pgUniqueViolation = "23505"
 
+// ErrTooManyCalendars is returned by CreateCalendar when creating another
+// calendar would exceed the configured cap. It is wrapped in a 507 HTTP error
+// so go-webdav serialises it correctly, and callers can match it with
+// errors.Is.
+var ErrTooManyCalendars = errors.New("calendar limit reached")
+
 // Backend stores calendars and calendar objects in PostgreSQL.
 type Backend struct {
-	pool   *pgxpool.Pool
-	paths  Paths
-	logger *slog.Logger
+	pool         *pgxpool.Pool
+	paths        Paths
+	logger       *slog.Logger
+	maxCalendars int
 }
 
-// New returns a Backend backed by the given pool and URL prefix. The logger is
-// used for audit records of mutating operations; if nil, slog.Default is used.
-func New(pool *pgxpool.Pool, prefix string, logger *slog.Logger) *Backend {
+// New returns a Backend backed by the given pool and URL prefix. maxCalendars
+// caps how many calendars may exist (zero or negative disables the cap). The
+// logger is used for audit records of mutating operations; if nil, slog.Default
+// is used.
+func New(pool *pgxpool.Pool, prefix string, maxCalendars int, logger *slog.Logger) *Backend {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Backend{pool: pool, paths: NewPaths(prefix), logger: logger}
+	return &Backend{pool: pool, paths: NewPaths(prefix), logger: logger, maxCalendars: maxCalendars}
 }
 
 // EnsureDefaultCalendar creates the pre-seeded default calendar if it does not
@@ -107,16 +118,39 @@ func (b *Backend) CreateCalendar(ctx context.Context, cal *caldav.Calendar) erro
 	if len(comps) == 0 {
 		comps = []string{"VEVENT", "VTODO"}
 	}
+
+	// Enforce the calendar cap atomically: the count subquery and the insert run
+	// in a single statement, so concurrent MKCALENDARs cannot race past the
+	// limit. A non-positive cap means unlimited.
+	limit := b.maxCalendars
+	if limit <= 0 {
+		limit = math.MaxInt32
+	}
 	tag, err := b.pool.Exec(ctx, `
 		INSERT INTO calendars (path, name, description, max_resource_size, supported_component_set)
-		VALUES ($1, $2, $3, $4, $5)
+		SELECT $1, $2, $3, $4, $5
+		WHERE (SELECT count(*) FROM calendars) < $6
 		ON CONFLICT (path) DO NOTHING`,
-		cal.Path, cal.Name, cal.Description, cal.MaxResourceSize, comps)
+		cal.Path, cal.Name, cal.Description, cal.MaxResourceSize, comps, limit)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() > 0 {
-		b.logger.Info("audit: calendar created", "op", "MKCALENDAR", "path", cal.Path, "name", cal.Name)
+		b.logger.Info("audit: calendar created", "op", "MKCALENDAR",
+			"path", sanitizeLog(cal.Path), "name", sanitizeLog(cal.Name))
+		return nil
+	}
+
+	// No row was inserted: either the calendar already exists (idempotent
+	// success) or the cap blocked it. Distinguish so the caller can return the
+	// right status instead of a misleading 201.
+	var exists bool
+	if err := b.pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM calendars WHERE path = $1)`, cal.Path).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return webdav.NewHTTPError(http.StatusInsufficientStorage, ErrTooManyCalendars)
 	}
 	return nil
 }
@@ -284,7 +318,8 @@ func (b *Backend) PutCalendarObject(ctx context.Context, path string, cal *ical.
 	}
 
 	b.logger.Info("audit: calendar object stored",
-		"op", "PUT", "path", path, "calendar", calendarPath, "uid", uid, "etag", etag, "bytes", len(raw))
+		"op", "PUT", "path", sanitizeLog(path), "calendar", sanitizeLog(calendarPath),
+		"uid", sanitizeLog(uid), "etag", etag, "bytes", len(raw))
 
 	return &caldav.CalendarObject{
 		Path:          path,
@@ -324,7 +359,8 @@ func (b *Backend) DeleteCalendarObject(ctx context.Context, path string) error {
 		return err
 	}
 
-	b.logger.Info("audit: calendar object deleted", "op", "DELETE", "path", path, "calendar", calendarPath)
+	b.logger.Info("audit: calendar object deleted", "op", "DELETE",
+		"path", sanitizeLog(path), "calendar", sanitizeLog(calendarPath))
 	return nil
 }
 
@@ -378,4 +414,17 @@ func nullableTime(t time.Time) *time.Time {
 func isUniqueViolation(err error) bool {
 	var pgErr interface{ SQLState() string }
 	return errors.As(err, &pgErr) && pgErr.SQLState() == pgUniqueViolation
+}
+
+// sanitizeLog strips control characters (including CR/LF) from an
+// attacker-controlled value so it cannot forge or split audit log lines
+// (CWE-117). The shipped slog TextHandler already quotes such values, so this is
+// defence-in-depth that survives a future handler change.
+func sanitizeLog(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
 }

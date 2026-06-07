@@ -39,18 +39,42 @@ func (p Paths) HomeSet() string { return p.prefix + "/calendars/user/" }
 // DefaultCalendar returns the path of the pre-seeded default calendar (depth 3).
 func (p Paths) DefaultCalendar() string { return p.prefix + "/calendars/user/default/" }
 
+// maxCalendarName bounds the length of the <name> path segment so a calendar
+// cannot be created under an absurdly long, storage-heavy path.
+const maxCalendarName = 128
+
 // IsCalendar reports whether urlPath is a calendar collection path, i.e.
 // <prefix>/calendars/user/<name>/ with a single non-empty <name> segment (the
 // depth-3 layout documented above). This replicates the one classification
 // go-webdav makes internally but does not export, so MKCALENDAR can be rejected
 // at any other location just as MKCOL is.
+//
+// The <name> segment is also validated for path safety: it must be a single,
+// length-bounded segment free of separators ("/", "\"), path-traversal tokens
+// (".", ".."), and control characters. This is defence-in-depth — net/http's
+// ServeMux already cleans "." / ".." out of request paths — but it keeps an
+// unsafe segment from ever reaching the database as a stored path.
 func (p Paths) IsCalendar(urlPath string) bool {
 	rest, ok := strings.CutPrefix(urlPath, p.HomeSet())
 	if !ok {
 		return false
 	}
 	name := strings.TrimSuffix(rest, "/")
-	return name != "" && !strings.Contains(name, "/")
+	if name == "" || len(name) > maxCalendarName {
+		return false
+	}
+	if name == "." || name == ".." || strings.Contains(name, "..") {
+		return false
+	}
+	if strings.ContainsAny(name, "/\\") {
+		return false
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 // CalendarOf returns the calendar collection path that owns the given object
