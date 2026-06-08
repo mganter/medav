@@ -201,7 +201,8 @@ func (b *Backend) ListCalendarObjects(ctx context.Context, path string, req *cal
 func (b *Backend) QueryCalendarObjects(ctx context.Context, path string, query *caldav.CalendarQuery) ([]caldav.CalendarObject, error) {
 	// Stage A: coarse, permissive SQL pre-filter over the indexed columns. It
 	// must never drop an object the exact filter would keep, so NULL bounds are
-	// treated as open-ended and recurring rows are never upper-bounded.
+	// treated as open-ended and recurring rows are never bounded by either end
+	// of the window (their stored span covers only the first occurrence).
 	sql := `SELECT path, data, etag, modified_at, content_length
 		FROM calendar_objects WHERE calendar_path = $1`
 	args := []any{path}
@@ -214,7 +215,12 @@ func (b *Backend) QueryCalendarObjects(ctx context.Context, path string, query *
 			}
 			if !sub.Start.IsZero() {
 				args = append(args, sub.Start.UTC())
-				sql += fmt.Sprintf(" AND (dtend IS NULL OR dtend > $%d)", len(args))
+				// A recurring row's stored dtend covers only its first
+				// occurrence; later occurrences may fall after the window
+				// start, so recurring rows must never be excluded by the
+				// lower bound (mirroring the upper bound below). Stage B does
+				// the exact UNTIL/COUNT-aware expansion.
+				sql += fmt.Sprintf(" AND (dtend IS NULL OR dtend > $%d OR has_rrule)", len(args))
 			}
 			if !sub.End.IsZero() {
 				args = append(args, sub.End.UTC())

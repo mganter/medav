@@ -96,6 +96,22 @@ END:VEVENT
 END:VCALENDAR
 `
 
+// birthdayEvent is an all-day, yearly-recurring event whose first occurrence is
+// in 1980 — the shape an imported "Geburtstage" entry takes.
+const birthdayEvent = `BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//medav//test//EN
+BEGIN:VEVENT
+UID:bday@medav
+DTSTAMP:20260101T120000Z
+DTSTART;VALUE=DATE:19800510
+DURATION:P1D
+RRULE:FREQ=YEARLY
+SUMMARY:Birthday
+END:VEVENT
+END:VCALENDAR
+`
+
 func TestCalDAVIntegration(t *testing.T) {
 	ts := startServer(t)
 
@@ -217,6 +233,23 @@ func TestCalDAVIntegration(t *testing.T) {
 		disjoint := ts.report(t, "/calendars/user/default/",
 			timeRangeQuery("20270101T000000Z", "20270102T000000Z"))
 		assertNotContains(t, disjoint, path)
+	})
+
+	t.Run("report-time-range-recurring", func(t *testing.T) {
+		// A yearly all-day birthday whose first (and only stored) occurrence is
+		// far in the past. A REPORT windowed on the future — as DAVx5 sends
+		// when limiting past events — must still return it, because the rule
+		// recurs into the window. Regression for recurring events vanishing
+		// from sync and being re-created with If-None-Match:* (HTTP 412).
+		path := "/calendars/user/default/bday.ics"
+		resp, _ := ts.do(t, http.MethodPut, path, birthdayEvent, http.Header{"Content-Type": {"text/calendar"}})
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("PUT %s status = %d, want 201", path, resp.StatusCode)
+		}
+
+		future := ts.report(t, "/calendars/user/default/",
+			timeRangeQuery("20260101T000000Z", "20261231T000000Z"))
+		assertContains(t, future, path)
 	})
 
 	t.Run("delete", func(t *testing.T) {
