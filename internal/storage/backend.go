@@ -32,23 +32,37 @@ const pgUniqueViolation = "23505"
 // errors.Is.
 var ErrTooManyCalendars = errors.New("calendar limit reached")
 
+// ErrTooManyObjects is returned by PutCalendarObject when creating another
+// object in a calendar would exceed the configured per-calendar cap. It is
+// wrapped in a 507 HTTP error so go-webdav serialises it correctly, and callers
+// can match it with errors.Is.
+var ErrTooManyObjects = errors.New("calendar object limit reached")
+
 // Backend stores calendars and calendar objects in PostgreSQL.
 type Backend struct {
-	pool         *pgxpool.Pool
-	paths        Paths
-	logger       *slog.Logger
-	maxCalendars int
+	pool                  *pgxpool.Pool
+	paths                 Paths
+	logger                *slog.Logger
+	maxCalendars          int
+	maxObjectsPerCalendar int
 }
 
 // New returns a Backend backed by the given pool and URL prefix. maxCalendars
-// caps how many calendars may exist (zero or negative disables the cap). The
-// logger is used for audit records of mutating operations; if nil, slog.Default
-// is used.
-func New(pool *pgxpool.Pool, prefix string, maxCalendars int, logger *slog.Logger) *Backend {
+// caps how many calendars may exist and maxObjectsPerCalendar caps how many
+// objects a single calendar may hold (zero or negative disables either cap).
+// The logger is used for audit records of mutating operations; if nil,
+// slog.Default is used.
+func New(pool *pgxpool.Pool, prefix string, maxCalendars, maxObjectsPerCalendar int, logger *slog.Logger) *Backend {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Backend{pool: pool, paths: NewPaths(prefix), logger: logger, maxCalendars: maxCalendars}
+	return &Backend{
+		pool:                  pool,
+		paths:                 NewPaths(prefix),
+		logger:                logger,
+		maxCalendars:          maxCalendars,
+		maxObjectsPerCalendar: maxObjectsPerCalendar,
+	}
 }
 
 // EnsureDefaultCalendar creates the pre-seeded default calendar if it does not
@@ -265,12 +279,45 @@ func (b *Backend) PutCalendarObject(ctx context.Context, path string, cal *ical.
 	}
 	defer tx.Rollback(ctx)
 
+	// Lock the parent calendar row for the duration of the transaction. This
+	// confirms the calendar exists, yields its max_resource_size, and serialises
+	// concurrent writes to the same calendar so the object-count check below
+	// cannot be raced past the cap.
+	var maxResourceSize int64
+	calErr := tx.QueryRow(ctx, `SELECT max_resource_size FROM calendars WHERE path = $1 FOR UPDATE`, calendarPath).
+		Scan(&maxResourceSize)
+	if errors.Is(calErr, pgx.ErrNoRows) {
+		return nil, webdav.NewHTTPError(http.StatusNotFound, errors.New("calendar not found"))
+	}
+	if calErr != nil {
+		return nil, calErr
+	}
+
+	// Enforce the advertised per-object size limit (CALDAV:max-resource-size).
+	// Zero means unlimited.
+	if maxResourceSize > 0 && int64(len(raw)) > maxResourceSize {
+		return nil, caldav.NewPreconditionError(caldav.PreconditionMaxResourceSize)
+	}
+
 	// Inspect any existing object at this path to evaluate conditional headers.
 	var existingETag string
 	existErr := tx.QueryRow(ctx, `SELECT etag FROM calendar_objects WHERE path = $1 FOR UPDATE`, path).Scan(&existingETag)
 	exists := !errors.Is(existErr, pgx.ErrNoRows)
 	if existErr != nil && exists {
 		return nil, existErr
+	}
+
+	// Enforce the per-calendar object cap, but only for new objects: overwriting
+	// an existing one does not grow the table. A non-positive cap is unlimited.
+	if !exists && b.maxObjectsPerCalendar > 0 {
+		var count int
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM calendar_objects WHERE calendar_path = $1`, calendarPath).Scan(&count); err != nil {
+			return nil, err
+		}
+		if count >= b.maxObjectsPerCalendar {
+			return nil, webdav.NewHTTPError(http.StatusInsufficientStorage, ErrTooManyObjects)
+		}
 	}
 
 	if opts != nil {

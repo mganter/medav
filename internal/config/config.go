@@ -17,6 +17,11 @@ const defaultMaxBodyBytes int64 = 10 << 20 // 10 MiB
 // realistic need.
 const defaultMaxCalendars = 100
 
+// defaultMaxObjectsPerCalendar bounds how many objects a single calendar may
+// hold, so a client looping PUT cannot grow storage without limit (a
+// resource-exhaustion DoS). Far above any single calendar's realistic need.
+const defaultMaxObjectsPerCalendar = 10000
+
 // Config holds all runtime settings. The service is single-user and performs no
 // authentication of its own — a reverse proxy / ingress controller is expected
 // to authenticate requests upstream.
@@ -47,18 +52,23 @@ type Config struct {
 	// MaxCalendars caps how many calendars may exist. Zero or negative disables
 	// the cap. Defaults to defaultMaxCalendars.
 	MaxCalendars int
+	// MaxObjectsPerCalendar caps how many objects a single calendar may hold.
+	// Zero or negative disables the cap. Defaults to
+	// defaultMaxObjectsPerCalendar.
+	MaxObjectsPerCalendar int
 }
 
 // Load reads configuration from environment variables, applying defaults.
 func Load() (Config, error) {
 	cfg := Config{
-		DatabaseURL:     os.Getenv("DATABASE_URL"),
-		ListenAddr:      getenv("LISTEN_ADDR", "127.0.0.1:8080"),
-		Prefix:          os.Getenv("PREFIX"),
-		ProxyAuthHeader: getenv("PROXY_AUTH_HEADER", "X-Medav-Proxy-Auth"),
-		ProxyAuthSecret: os.Getenv("PROXY_AUTH_SECRET"),
-		MaxBodyBytes:    defaultMaxBodyBytes,
-		MaxCalendars:    defaultMaxCalendars,
+		DatabaseURL:           os.Getenv("DATABASE_URL"),
+		ListenAddr:            getenv("LISTEN_ADDR", "127.0.0.1:8080"),
+		Prefix:                os.Getenv("PREFIX"),
+		ProxyAuthHeader:       getenv("PROXY_AUTH_HEADER", "X-Medav-Proxy-Auth"),
+		ProxyAuthSecret:       os.Getenv("PROXY_AUTH_SECRET"),
+		MaxBodyBytes:          defaultMaxBodyBytes,
+		MaxCalendars:          defaultMaxCalendars,
+		MaxObjectsPerCalendar: defaultMaxObjectsPerCalendar,
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -79,6 +89,14 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("MAX_CALENDARS: %w", err)
 		}
 		cfg.MaxCalendars = n
+	}
+
+	if v := os.Getenv("MAX_OBJECTS_PER_CALENDAR"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("MAX_OBJECTS_PER_CALENDAR: %w", err)
+		}
+		cfg.MaxObjectsPerCalendar = n
 	}
 
 	// Normalise the prefix: strip a trailing slash so path building stays simple.

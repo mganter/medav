@@ -42,6 +42,13 @@ type testServer struct {
 // container and pool are torn down via t.Cleanup.
 func startServer(t *testing.T) *testServer {
 	t.Helper()
+	return startServerWithLimits(t, 0, 0)
+}
+
+// startServerWithLimits is startServer with explicit caps: maxCalendars and
+// maxObjectsPerCalendar (zero disables either cap).
+func startServerWithLimits(t *testing.T, maxCalendars, maxObjectsPerCalendar int) *testServer {
+	t.Helper()
 	ctx := context.Background()
 
 	pgc, err := postgres.Run(ctx, "postgres:17-alpine",
@@ -70,7 +77,7 @@ func startServer(t *testing.T) *testServer {
 		t.Fatalf("migrate: %v", err)
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	backend := storage.New(pool, "", 0, logger)
+	backend := storage.New(pool, "", maxCalendars, maxObjectsPerCalendar, logger)
 	if err := backend.EnsureDefaultCalendar(ctx); err != nil {
 		t.Fatalf("seed default calendar: %v", err)
 	}
@@ -279,6 +286,22 @@ func TestCalDAVIntegration(t *testing.T) {
 			t.Fatalf("tombstones for %s = %d, want 1", path, tombstones)
 		}
 	})
+}
+
+// TestPerCalendarObjectCap verifies that the per-calendar object cap rejects
+// new objects beyond the limit with 507, while overwriting an existing object
+// (which does not grow the table) still succeeds.
+func TestPerCalendarObjectCap(t *testing.T) {
+	ts := startServerWithLimits(t, 0, 2) // unlimited calendars, 2 objects each
+
+	ts.putEvent(t, "/calendars/user/default/cap1.ics", "cap1@medav", http.StatusCreated)
+	ts.putEvent(t, "/calendars/user/default/cap2.ics", "cap2@medav", http.StatusCreated)
+
+	// A third distinct object exceeds the cap.
+	ts.putEvent(t, "/calendars/user/default/cap3.ics", "cap3@medav", http.StatusInsufficientStorage)
+
+	// Overwriting an existing object is still allowed.
+	ts.putEvent(t, "/calendars/user/default/cap1.ics", "cap1@medav", http.StatusCreated)
 }
 
 // --- request helpers ------------------------------------------------------

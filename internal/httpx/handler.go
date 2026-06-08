@@ -110,12 +110,22 @@ func logging(next http.Handler, logger *slog.Logger) http.Handler {
 		case sw.status >= 400:
 			level = slog.LevelWarn
 		}
-		logger.LogAttrs(r.Context(), level, "request",
+		// Record the source so access-control failures (e.g. a 403 from the
+		// proxy-auth gate) are attributable. RemoteAddr is the immediate peer
+		// (the proxy when deployed as intended); the proxy-supplied
+		// X-Forwarded-For, when present, carries the real client. It is
+		// client-controlled, so it is sanitized like the path (CWE-117).
+		attrs := []slog.Attr{
 			slog.String("method", r.Method),
 			slog.String("path", sanitizeForLog(r.URL.Path)),
 			slog.Int("status", sw.status),
 			slog.Duration("duration", time.Since(start)),
-		)
+			slog.String("remote", r.RemoteAddr),
+		}
+		if ff := r.Header.Get("X-Forwarded-For"); ff != "" {
+			attrs = append(attrs, slog.String("forwarded_for", sanitizeForLog(ff)))
+		}
+		logger.LogAttrs(r.Context(), level, "request", attrs...)
 	})
 }
 
